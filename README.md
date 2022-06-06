@@ -14,5 +14,5 @@ make
 To run the program simpy call it from the command line:
 
 ```
-./card-emulator
+./build/card-emulator
 ```
