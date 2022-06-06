@@ -1,9 +1,12 @@
 .PHONY = default
 
+BUILD_DIR = build
 BUILD = card-emulator
+SRC = src
 
-default: card-emulator.c
-	gcc $^ -o $(BUILD)
+default: $(SRC)/card-emulator.c
+	mkdir -p $(BUILD_DIR)
+	gcc $^ -o $(BUILD_DIR)/$(BUILD)
 
 clean:
-	rm $(BUILD)
+	rm -r $(BUILD_DIR)

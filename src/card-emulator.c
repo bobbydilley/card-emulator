@@ -224,7 +224,7 @@ int closeDevice(int fd)
 	return close(fd) == 0;
 }
 
-int writePacket(unsigned char *packet, int length)
+int writePacket(unsigned char *packet, int length, int rs422Mode)
 {
 	unsigned char outputPacket[BUFFER_SIZE];
 
@@ -249,7 +249,18 @@ int writePacket(unsigned char *packet, int length)
 	writeBytes(outputPacket, (length + 4));
 }
 
-int readPacket(unsigned char *packet)
+/**
+ * Read in a card reader packet
+ * 
+ * Reads in a packet from the card reader taking into account if we're running
+ * in RS422 mode and require to skip the address bytes that we get before each
+ * data byte.
+ * 
+ * @param packet The address of the packet buffer to fill with the read packet
+ * @param rs422Mode Set if reader is connected directly to the Naomi RS422 pins
+ * @returns The length of the packet read
+ * */
+int readPacket(unsigned char *packet, int rs422Mode)
 {
 	int bytesAvailable = 0, phase = 0, index = 0, dataIndex = 0, finished = 0;
 	unsigned char checksum = 0x00;
@@ -269,6 +280,9 @@ int readPacket(unsigned char *packet)
 			switch (phase)
 			{
 			case 0:
+				if (rs422Mode && inputBuffer[index] == 0x01)
+					index++;
+
 				if (inputBuffer[index] != START_OF_TEXT)
 				{
 					packet[0] = inputBuffer[index];
@@ -299,7 +313,7 @@ int readPacket(unsigned char *packet)
 			default:
 				break;
 			}
-			index += 1;
+			index += 1 + (rs422Mode == 1);
 		}
 	}
 
@@ -344,7 +358,6 @@ void getTrackIndex(unsigned char track, int *trackIndex)
 
 int main(int argc, char *argv[])
 {
-
 	printf("Card Emulator Version 0.1\n\n");
 
 	char *serialPath = "/dev/ttyUSB0";
@@ -352,6 +365,9 @@ int main(int argc, char *argv[])
 
 	int rs422Mode = 0;
 	int shutterMode = 0;
+
+	printf("  Connection Mode: %s\n", rs422Mode ? "RS422 Mode" : "RS232 Mode");
+	printf("   Emulation Mode: %s\n\n", shutterMode ? "Shutter" : "No Shutter");
 
 	if ((serialIO = open(serialPath, O_RDWR | O_NOCTTY | O_SYNC | O_NDELAY)) < 0)
 	{
@@ -386,7 +402,7 @@ int main(int argc, char *argv[])
 
 	while (running)
 	{
-		inputPacketLength = readPacket(inputPacket);
+		inputPacketLength = readPacket(inputPacket, rs422Mode);
 
 		if (inputPacketLength < 1)
 			continue;
@@ -417,7 +433,7 @@ int main(int argc, char *argv[])
 			outputPacketDataLength = 0;
 
 			// Send the packet to the Naomi
-			writePacket(outputPacket, outputPacketLength);
+			writePacket(outputPacket, outputPacketLength, rs422Mode);
 
 			// Now we run the physical simulation
 			if (reader.jobStatus == STATUS_RUNNING_COMMAND)
