@@ -49,11 +49,24 @@ int serialIO = -1;
 #define STATUS_NO_DISPENSER 0x36
 #define STATUS_CARD_FULL 0x37
 
-/* Command bytes */
+/* Protocol Symbolic Bytes */
 #define START_OF_TEXT 0x02
 #define END_OF_TEXT 0x03
 #define ENQUIRY 0x05
 #define ACK 0x06
+
+/* Command Bytes */
+#define INIT 0x10
+#define REGISTER_FONT 0x7A
+#define GET_STATUS 0x20
+#define SET_SHUTTER 0xD0
+#define CLEAN_CARD 0xA0
+#define EJECT_CARD 0x80
+#define READ 0x33
+#define WRITE 0x53
+#define ERASE 0x7D
+#define PRINT 0x7C
+#define NEW_CARD 0xB0
 
 /* Data sizes */
 #define TRACK_SIZE 69
@@ -452,48 +465,68 @@ int main(int argc, char *argv[])
 
 		switch (inputPacket[0])
 		{
-		case 0x10:
+
+		// Initialise the card reader unit
+		case INIT:
+		{
 			printf("Command: Init\n");
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
-			break;
+		}
+		break;
 
-		case 0x7A:
+		// Register a font for printing onto cards
+		case REGISTER_FONT:
+		{
 			printf("Command: Register Font\n");
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
-			break;
+		}
+		break;
 
-		case 0x20:
+		// Get the status of the card reader unit
+		case GET_STATUS:
+		{
 			printf("Command: Get Status\n");
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
-			break;
+		}
+		break;
 
-		case 0xD0:
+		// Set the shutter on the front of the reader to open/closed
+		case SET_SHUTTER:
+		{
 			printf("Command: Set Shutter\n");
 			reader.coverClosed = (inputPacket[4] == 0x31);
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
-			break;
+		}
+		break;
 
-		case 0xA0:
+		// Clean the magnetic strip on the card to ensure proper electrical contact
+		case CLEAN_CARD:
+		{
 			printf("Command: Clean Card\n");
 			reader.coverClosed = 0;
 			reader.cardPosition = NOT_INSERTED;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
-			break;
+		}
+		break;
 
-		case 0x80:
+		// Physically eject the card from the reader
+		case EJECT_CARD:
+		{
 			printf("Command: Eject Card\n");
 			reader.coverClosed = 0;
 			reader.cardPosition = EJECTING_CARD;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
-			break;
+		}
+		break;
 
-		case 0x33:
+		// Read data from the card
+		case READ:
 		{
 			printf("Command: Read\n");
 
@@ -527,7 +560,8 @@ int main(int argc, char *argv[])
 		}
 		break;
 
-		case 0x53:
+		// Write data to the card
+		case WRITE:
 		{
 			printf("Command: Write\n");
 
@@ -563,7 +597,8 @@ int main(int argc, char *argv[])
 		}
 		break;
 
-		case 0x7D:
+		// Erase all of the data on the card
+		case ERASE:
 		{
 			printf("Command: Erase\n");
 			for (int i = 0; i < 3; i++)
@@ -572,8 +607,10 @@ int main(int argc, char *argv[])
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
+		break;
 
-		case 0x7C:
+		// Physically print text/images onto the card
+		case PRINT:
 		{
 			printf("Command: Print\n");
 			reader.readerStatus = STATUS_NO_ERR;
@@ -581,11 +618,14 @@ int main(int argc, char *argv[])
 		}
 		break;
 
-		case 0xB0:
+		// Dispense a new card from the stack of cards in the reader
+		case NEW_CARD:
+		{
 			printf("Command: Get new card\n");
 			reader.cardPosition = DISPENCING_FROM_BACK;
 			reader.coverClosed = 1;
-			break;
+		}
+		break;
 
 		default:
 			printf("Error: %X is an unknown command\n", inputPacket[0]);
