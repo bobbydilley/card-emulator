@@ -66,7 +66,12 @@ int serialIO = -1;
 #define WRITE 0x53
 #define ERASE 0x7D
 #define PRINT 0x7C
+#define SET_PRINT_PARAM 0x78
 #define NEW_CARD 0xB0
+#define CANCEL 0x40
+
+/* Naomi RS422 Response Bytes */
+#define ERROR_RESPONSE 0x24
 
 /* Data sizes */
 #define TRACK_SIZE 69
@@ -123,7 +128,7 @@ char getCardStatus(CardReader *reader, int shutterMode)
 	}
 
 	// Shutters
-	char result = 1 << (reader->coverClosed & 0x01) ? 6 : 7;
+	char result = 1 << ((reader->coverClosed & 0x01) ? 7 : 6);
 
 	// Dispenser Full
 	result |= (reader->dispenserFull & 0x01) << 5;
@@ -152,7 +157,7 @@ char getCardStatus(CardReader *reader, int shutterMode)
 	return result;
 }
 
-int setSerialAttributes(int fd, int myBaud)
+int setSerialAttributes(int fd, int myBaud, int parity, int flow)
 {
 	struct termios options;
 	int status;
@@ -163,25 +168,41 @@ int setSerialAttributes(int fd, int myBaud)
 	cfsetospeed(&options, myBaud);
 
 	options.c_cflag |= (CLOCAL | CREAD);
-	options.c_cflag &= ~PARENB;
-	options.c_cflag &= ~CSTOPB;
+	options.c_cflag &= ~PARENB; // Disable Pairty Bit (EVEN)
+	options.c_cflag &= ~CSTOPB; // Set one stop bit
 	options.c_cflag &= ~CSIZE;
-	options.c_cflag |= CS8;
+	options.c_cflag |= CS8; // 8 BIT SIZE
 	options.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
 	options.c_oflag &= ~OPOST;
 
+	// SET EVEN PARITY
+	if (parity)
+	{
+		options.c_cflag |= PARENB;
+		options.c_cflag &= ~PARODD;
+	}
+
+	// ENABLE FLOW CONTROL
+	if (flow)
+	{
+		options.c_cflag |= CRTSCTS;
+	}
+
+	// SET INTER BYTE TIMEOUTS TO 0
 	options.c_cc[VMIN] = 0;
 	options.c_cc[VTIME] = 0;
 
+	// SET OPTIONS
 	tcsetattr(fd, TCSANOW, &options);
 
+	/*
 	ioctl(fd, TIOCMGET, &status);
 
 	status |= TIOCM_DTR;
 	status |= TIOCM_RTS;
 
 	ioctl(fd, TIOCMSET, &status);
-
+*/
 	usleep(100 * 1000); // 10mS
 
 	struct serial_struct serial_settings;
@@ -219,16 +240,30 @@ int readBytes(unsigned char *buffer, int amount)
 	return read(serialIO, buffer, amount);
 }
 
-int writeBytes(unsigned char *buffer, int amount)
+int writeBytes(unsigned char *buffer, int amount, int output)
 {
-	/**printf("writeBytes: ");
-	for (int i = 0; i < amount; i++)
-	{
-		printf("%X ", buffer[i]);
-	}
-	printf("\n");**/
+	if(amount < 1)
+		return 0;
 
-	return write(serialIO, buffer, amount);
+	int outputIndex = 0;
+	unsigned char outputBuffer[amount * 4];
+
+	for(int i = 0 ; i < amount ; i++) {
+		outputBuffer[outputIndex++] = 0x80;
+		outputBuffer[outputIndex++] = output ? 0x40 : 0x00;
+		outputBuffer[outputIndex++] = 0x81;
+		outputBuffer[outputIndex++] = buffer[i];
+
+	}
+
+	printf("writeBytes: ");
+	for (int i = 0; i < amount * 4; i++)
+	{
+		printf("%X ", outputBuffer[i]);
+	}
+	printf("\n");
+
+	return write(serialIO, outputBuffer, amount * 4);
 }
 
 int closeDevice(int fd)
@@ -259,7 +294,7 @@ int writePacket(unsigned char *packet, int length, int rs422Mode)
 
 	outputPacket[index++] = checksum;
 
-	writeBytes(outputPacket, (length + 4));
+	writeBytes(outputPacket, (length + 4), 1);
 }
 
 /**
@@ -283,8 +318,11 @@ int readPacket(unsigned char *packet, int rs422Mode)
 	{
 		int bytesRead = readBytes(inputBuffer + bytesAvailable, BUFFER_SIZE - bytesAvailable);
 
+
 		if (bytesRead < 0)
 			return -1;
+
+		//writeBytes(inputBuffer + bytesAvailable, bytesRead, 0);
 
 		bytesAvailable += bytesRead;
 
@@ -376,11 +414,16 @@ int main(int argc, char *argv[])
 	char *serialPath = "/dev/ttyUSB0";
 	char *cardPath = "card.bin";
 
-	int rs422Mode = 0;
-	int shutterMode = 0;
+	int rs422Mode = 1;
+	int shutterMode = 1;
+	int evenParity = 0;
+	int flowControl = 0;
+	int baudRate = B2000000;
 
 	printf("  Connection Mode: %s\n", rs422Mode ? "RS422 Mode" : "RS232 Mode");
-	printf("   Emulation Mode: %s\n\n", shutterMode ? "Shutter" : "No Shutter");
+	printf("   Emulation Mode: %s\n", shutterMode ? "Shutter" : "No Shutter");
+	printf("           Parity: %s\n", evenParity ? "Even" : "None");
+	printf("     Flow Control: %s\n\n", flowControl ? "RTS/CTS" : "None");
 
 	if ((serialIO = open(serialPath, O_RDWR | O_NOCTTY | O_SYNC | O_NDELAY)) < 0)
 	{
@@ -388,10 +431,10 @@ int main(int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
-	setSerialAttributes(serialIO, B9600);
+	setSerialAttributes(serialIO, baudRate, evenParity, flowControl);
 
 	CardReader reader = {0};
-	reader.dispenserFull = 0;
+	reader.dispenserFull = 1;
 	reader.coverClosed = 0;
 	reader.cardPosition = NOT_INSERTED;
 	reader.readerStatus = STATUS_NO_ERR;
@@ -420,14 +463,13 @@ int main(int argc, char *argv[])
 		if (inputPacketLength < 1)
 			continue;
 
-		/*
 		printf("ReadPacket: ");
 		for (int i = 0; i < inputPacketLength; i++)
 		{
 			printf("%X ", inputPacket[i]);
 		}
 		printf("\n");
-*/
+
 		// Should we send a packet
 		if (inputPacketLength == 1 && inputPacket[0] == ENQUIRY)
 		{
@@ -466,6 +508,13 @@ int main(int argc, char *argv[])
 		switch (inputPacket[0])
 		{
 
+		// Naomi RS422 Returned the ERROR Response
+		case ERROR_RESPONSE:
+		{
+			printf("Error: Naomi RS422 Error Response\n");
+		}
+		break;
+
 		// Initialise the card reader unit
 		case INIT:
 		{
@@ -498,6 +547,7 @@ int main(int argc, char *argv[])
 		{
 			printf("Command: Set Shutter\n");
 			reader.coverClosed = (inputPacket[4] == 0x31);
+			printf("Shutter closed is %d\n", reader.coverClosed);
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -624,6 +674,27 @@ int main(int argc, char *argv[])
 			printf("Command: Get new card\n");
 			reader.cardPosition = DISPENCING_FROM_BACK;
 			reader.coverClosed = 1;
+			reader.readerStatus = STATUS_NO_ERR;
+			reader.jobStatus = STATUS_NO_JOB;
+		}
+		break;
+
+		// Cancel the last operation
+		case CANCEL:
+		{
+			printf("Command: Cancel\n");
+			reader.cardPosition = NOT_INSERTED;
+			reader.readerStatus = STATUS_NO_ERR;
+			reader.jobStatus = STATUS_NO_JOB;
+		}
+		break;
+
+		case SET_PRINT_PARAM:
+		{
+			printf("Command: Set print param\n");
+			reader.cardPosition = UNDER_PRINT_HEAD;
+			reader.readerStatus = STATUS_NO_ERR;
+			reader.jobStatus = STATUS_NO_JOB;
 		}
 		break;
 
@@ -634,7 +705,10 @@ int main(int argc, char *argv[])
 
 		// Send the ack reply
 		unsigned char ack[] = {ACK};
-		writeBytes(ack, 1);
+		writeBytes(ack, 1, 1);
+
+		// Seperate for debugging purposes
+		printf("\n");
 	}
 
 	closeDevice(serialIO);

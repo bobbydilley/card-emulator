@@ -2,6 +2,14 @@
 
 There are various card readers used in different arcade machines. This document aims to document some of the ones that this project is interested in.
 
+## Derby Owners Club RS422 Board
+
+baudrate=9600
+parity=serial.PARITY_EVEN
+bytesize = serial.EIGHTBITS
+stopbits=serial.STOPBITS_ONE
+rtscts=1
+
 ## Derby Owners Club
 
 The Derby Owners Club card reader is connected via an intermediary board which converts the RS232 wire protocol to a custom RS422 wire protocol that connects to the Naomi itself. It is beneificial to be able to talk directly to the custom RS422 wire protocol so that the extra intermediary board is not required. The custom RS422 protocol is described below:
