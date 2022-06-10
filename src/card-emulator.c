@@ -245,25 +245,14 @@ int writeBytes(unsigned char *buffer, int amount, int output)
 	if(amount < 1)
 		return 0;
 
-	int outputIndex = 0;
-	unsigned char outputBuffer[amount * 4];
-
-	for(int i = 0 ; i < amount ; i++) {
-		outputBuffer[outputIndex++] = 0x80;
-		outputBuffer[outputIndex++] = output ? 0x40 : 0x00;
-		outputBuffer[outputIndex++] = 0x81;
-		outputBuffer[outputIndex++] = buffer[i];
-
-	}
-
 	printf("writeBytes: ");
-	for (int i = 0; i < amount * 4; i++)
+	for (int i = 0; i < amount; i++)
 	{
-		printf("%X ", outputBuffer[i]);
+		printf("%X ", buffer[i]);
 	}
 	printf("\n");
 
-	return write(serialIO, outputBuffer, amount * 4);
+	return write(serialIO, buffer, amount);
 }
 
 int closeDevice(int fd)
@@ -321,8 +310,6 @@ int readPacket(unsigned char *packet, int rs422Mode)
 
 		if (bytesRead < 0)
 			return -1;
-
-		//writeBytes(inputBuffer + bytesAvailable, bytesRead, 0);
 
 		bytesAvailable += bytesRead;
 
@@ -414,11 +401,11 @@ int main(int argc, char *argv[])
 	char *serialPath = "/dev/ttyUSB0";
 	char *cardPath = "card.bin";
 
-	int rs422Mode = 1;
+	int rs422Mode = 0;
 	int shutterMode = 1;
-	int evenParity = 0;
-	int flowControl = 0;
-	int baudRate = B2000000;
+	int evenParity = 1;
+	int flowControl = 1;
+	int baudRate = B9600;
 
 	printf("  Connection Mode: %s\n", rs422Mode ? "RS422 Mode" : "RS232 Mode");
 	printf("   Emulation Mode: %s\n", shutterMode ? "Shutter" : "No Shutter");
