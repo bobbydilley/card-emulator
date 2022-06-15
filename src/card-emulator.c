@@ -1,12 +1,13 @@
+#include <fcntl.h>
+#include <linux/serial.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <termios.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
-#include <linux/serial.h>
 #include <string.h>
-#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 #include <time.h>
+#include <unistd.h>
 
 #define TIMEOUT_SELECT 200
 #define BUFFER_SIZE 1024
@@ -94,6 +95,22 @@ typedef struct
 	unsigned char readerStatus;
 	unsigned char jobStatus;
 } CardReader;
+
+typedef struct
+{
+	int fd;
+	int *running;
+} RS422ThreadArguments;
+
+typedef struct
+{
+	unsigned char buffer[BUFFER_SIZE];
+	int head;
+	int tail;
+} CircularBuffer;
+
+CircularBuffer rs422InputBuffer;
+CircularBuffer rs422OutputBuffer;
 
 /**
  * Generates card status based upon card struct for both status modes
@@ -242,7 +259,7 @@ int readBytes(unsigned char *buffer, int amount)
 
 int writeBytes(unsigned char *buffer, int amount, int output)
 {
-	if(amount < 1)
+	if (amount < 1)
 		return 0;
 
 	printf("writeBytes: ");
@@ -307,7 +324,6 @@ int readPacket(unsigned char *packet, int rs422Mode)
 	{
 		int bytesRead = readBytes(inputBuffer + bytesAvailable, BUFFER_SIZE - bytesAvailable);
 
-
 		if (bytesRead < 0)
 			return -1;
 
@@ -318,15 +334,15 @@ int readPacket(unsigned char *packet, int rs422Mode)
 			switch (phase)
 			{
 			case 0:
-				if (rs422Mode && inputBuffer[index] == 0x01)
-					index++;
-
-				if (inputBuffer[index] != START_OF_TEXT)
+				if (inputBuffer[index] == ENQUIRY)
 				{
 					packet[0] = inputBuffer[index];
 					return 1;
 				}
-				phase++;
+				else if (inputBuffer[index] == START_OF_TEXT)
+				{
+					phase++;
+				}
 				break;
 			case 1:
 				length = inputBuffer[index];
@@ -351,7 +367,7 @@ int readPacket(unsigned char *packet, int rs422Mode)
 			default:
 				break;
 			}
-			index += 1 + (rs422Mode == 1);
+			index += 1;
 		}
 	}
 
@@ -394,6 +410,92 @@ void getTrackIndex(unsigned char track, int *trackIndex)
 	}
 }
 
+/**
+ * This thread deals with the RS422 ring network communication
+ * 
+ * Derby Owners Club uses a conversion board that speaks RS422 and
+ * converts to RS232. This thread will act as that conversion board
+ * and fill the input/output buffer with correct packets.
+ **/
+void *rs422Thread(void *vargp)
+{
+	RS422ThreadArguments *arguments = (RS422ThreadArguments *)vargp;
+
+	printf("Info: Starting RS422 Thread...\n");
+
+	rs422InputBuffer.head = rs422OutputBuffer.head = 0;
+	rs422InputBuffer.tail = rs422OutputBuffer.tail = 0;
+
+	while (arguments->running)
+	{
+		unsigned char buffer[2];
+		int n = readBytes(buffer, 2);
+
+		if (n < 1)
+			continue;
+
+		if (n == 1)
+		{
+			printf("Warning: One byte read\n");
+			n += readBytes(buffer + n, 1);
+		}
+
+		switch (buffer[0])
+		{
+		case 0x01:
+		{
+			writeBytes(buffer, 2, 0);
+
+			if (rs422InputBuffer.head + 1 == rs422InputBuffer.tail)
+			{
+				printf("Error: Buffer full\n");
+				arguments->running = 0;
+				continue;
+			}
+
+			rs422InputBuffer.buffer[rs422InputBuffer.head] = buffer[1];
+
+			if (++rs422InputBuffer.head == BUFFER_SIZE)
+				rs422InputBuffer.head = 0;
+
+		}
+		break;
+
+		case 0x80:
+		{
+			unsigned char outputBuffer[2] = {0x80, 0x00}; // Empty
+			if (rs422OutputBuffer.head != rs422OutputBuffer.tail)
+			{
+				outputBuffer[1] = 0x40; // Not empty
+			}
+			writeBytes(outputBuffer, 2, 0);
+		}
+		break;
+
+		case 0x81:
+		{
+			unsigned char outputBuffer[2] = {0x81, 0x00}; // Empty
+			if (rs422OutputBuffer.head != rs422OutputBuffer.tail)
+			{
+				outputBuffer[1] = rs422OutputBuffer.buffer[rs422OutputBuffer.tail];
+
+				if(++rs422OutputBuffer.tail == BUFFER_SIZE)
+					rs422OutputBuffer.tail = 0;
+			}
+			writeBytes(outputBuffer, 2, 0);
+		}
+		break;
+
+		default:
+			printf("Error: RS422 Thread %d is an unknown byte\n", buffer[0]);
+			arguments->running = 0;
+			break;
+		}
+	}
+
+	printf("Info: Stopping RS422 Thread...\n");
+}
+
 int main(int argc, char *argv[])
 {
 	printf("Card Emulator Version 0.1\n\n");
@@ -401,11 +503,11 @@ int main(int argc, char *argv[])
 	char *serialPath = "/dev/ttyUSB0";
 	char *cardPath = "card.bin";
 
-	int rs422Mode = 0;
+	int rs422Mode = 1;
 	int shutterMode = 1;
-	int evenParity = 1;
-	int flowControl = 1;
-	int baudRate = B9600;
+	int evenParity = 0;
+	int flowControl = 0;
+	int baudRate = B2000000;
 
 	printf("  Connection Mode: %s\n", rs422Mode ? "RS422 Mode" : "RS232 Mode");
 	printf("   Emulation Mode: %s\n", shutterMode ? "Shutter" : "No Shutter");
@@ -420,14 +522,23 @@ int main(int argc, char *argv[])
 
 	setSerialAttributes(serialIO, baudRate, evenParity, flowControl);
 
+	pthread_t rs422ThreadID;
+	int running = 1;
+
+	if (rs422Mode)
+	{
+		RS422ThreadArguments arguments = {0};
+		arguments.fd = serialIO;
+		arguments.running = &running;
+		pthread_create(&rs422ThreadID, NULL, rs422Thread, &arguments);
+	}
+
 	CardReader reader = {0};
 	reader.dispenserFull = 1;
 	reader.coverClosed = 0;
 	reader.cardPosition = NOT_INSERTED;
 	reader.readerStatus = STATUS_NO_ERR;
 	reader.jobStatus = STATUS_NO_JOB;
-
-	int running = 1;
 
 	unsigned char lastCommand = 0x00;
 
@@ -686,8 +797,11 @@ int main(int argc, char *argv[])
 		break;
 
 		default:
+		{
 			printf("Error: %X is an unknown command\n", inputPacket[0]);
-			return EXIT_FAILURE;
+			running = 0;
+			continue;
+		}
 		}
 
 		// Send the ack reply
@@ -696,6 +810,11 @@ int main(int argc, char *argv[])
 
 		// Seperate for debugging purposes
 		printf("\n");
+	}
+
+	if (rs422Mode && rs422ThreadID)
+	{
+		pthread_join(rs422ThreadID, NULL);
 	}
 
 	closeDevice(serialIO);
