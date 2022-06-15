@@ -218,8 +218,8 @@ int setSerialAttributes(int fd, int myBaud, int parity, int flow)
 	}
 
 	// SET INTER BYTE TIMEOUTS TO 0
-	options.c_cc[VMIN] = 0;
-	options.c_cc[VTIME] = 0;
+	options.c_cc[VMIN] = 1;
+	options.c_cc[VTIME] = 1;
 
 	// SET OPTIONS
 	tcsetattr(fd, TCSANOW, &options);
@@ -260,10 +260,10 @@ int readBytes(unsigned char *buffer, int amount, int rs422Mode)
 
 		memcpy(buffer, &rs422InputBuffer.buffer[rs422InputBuffer.tail], size);
 
-		rs422InputBuffer.tail += size;
-
-		if(rs422InputBuffer.tail > BUFFER_SIZE)
-			rs422InputBuffer.tail -= BUFFER_SIZE;
+		if (rs422InputBuffer.tail + size > BUFFER_SIZE)
+			rs422InputBuffer.tail = rs422InputBuffer.tail + size - BUFFER_SIZE;
+		else
+			rs422InputBuffer.tail += size;
 
 		return size;
 	}
@@ -304,22 +304,22 @@ int writeBytes(unsigned char *buffer, int amount, int rs422Mode)
 
 		int sizeWritten = BUFFER_SIZE - size < amount ? BUFFER_SIZE - size : amount;
 
-		memcpy(&rs422OutputBuffer.buffer[rs422InputBuffer.head], buffer, sizeWritten);
+		memcpy(&rs422OutputBuffer.buffer[rs422OutputBuffer.head], buffer, sizeWritten);
 
-		rs422OutputBuffer.head += sizeWritten;
-
-		if(rs422OutputBuffer.head > BUFFER_SIZE)
-			rs422OutputBuffer.head -= BUFFER_SIZE;
+		if (rs422OutputBuffer.head + sizeWritten > BUFFER_SIZE)
+			rs422OutputBuffer.head = rs422OutputBuffer.head + sizeWritten - BUFFER_SIZE;
+		else
+			rs422OutputBuffer.head += sizeWritten;
 
 		return sizeWritten;
 	}
 
-	printf("writeBytes: ");
+	/*printf("writeBytes: ");
 	for (int i = 0; i < amount; i++)
 	{
 		printf("%X ", buffer[i]);
 	}
-	printf("\n");
+	printf("\n");*/
 
 	return write(serialIO, buffer, amount);
 }
@@ -507,8 +507,10 @@ void *rs422Thread(void *vargp)
 
 			rs422InputBuffer.buffer[rs422InputBuffer.head] = buffer[1];
 
-			if (++rs422InputBuffer.head == BUFFER_SIZE)
+			if (rs422InputBuffer.head + 1 == BUFFER_SIZE)
 				rs422InputBuffer.head = 0;
+			else
+				rs422InputBuffer.head++;
 		}
 		break;
 
@@ -530,8 +532,10 @@ void *rs422Thread(void *vargp)
 			{
 				outputBuffer[1] = rs422OutputBuffer.buffer[rs422OutputBuffer.tail];
 
-				if (++rs422OutputBuffer.tail == BUFFER_SIZE)
+				if (rs422OutputBuffer.tail + 1 == BUFFER_SIZE)
 					rs422OutputBuffer.tail = 0;
+				else
+					rs422OutputBuffer.tail++;
 			}
 			writeBytes(outputBuffer, 2, 0);
 		}
@@ -542,6 +546,8 @@ void *rs422Thread(void *vargp)
 			arguments->running = 0;
 			break;
 		}
+
+		//printf("IN TAIL %d HEAD %d OUT TAIL %d HEAD %d\n", rs422InputBuffer.tail, rs422InputBuffer.head, rs422OutputBuffer.tail, rs422OutputBuffer.head);
 	}
 
 	printf("Info: Stopping RS422 Thread...\n");
@@ -553,7 +559,7 @@ int main(int argc, char *argv[])
 
 	Game game = DERBY_OWNERS_CLUB;
 
-	char *serialPath = "/dev/ttyUSB0";
+	char *serialPath = "/dev/ttyUSB1";
 	char *cardPath = "card.bin";
 
 	int rs422Mode = 1;
@@ -859,7 +865,8 @@ int main(int argc, char *argv[])
 
 		// Send the ack reply
 		unsigned char ack[] = {ACK};
-		writeBytes(ack, 1, rs422Mode);
+		int n = writeBytes(ack, 1, rs422Mode);
+		printf("ACK %d\n", n);
 
 		// Seperate for debugging purposes
 		printf("\n");
