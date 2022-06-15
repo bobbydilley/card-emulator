@@ -2,7 +2,7 @@
 
 There are various card readers used in different arcade machines. This document aims to document some of the ones that this project is interested in.
 
-## Derby Owners Club RS422 Board
+## Derby Owners Club RS232
 
 baudrate=9600
 parity=serial.PARITY_EVEN
@@ -10,30 +10,39 @@ bytesize = serial.EIGHTBITS
 stopbits=serial.STOPBITS_ONE
 rtscts=1
 
-## Derby Owners Club
+## Derby Owners Club RS422
 
-The Derby Owners Club card reader is connected via an intermediary board which converts the RS232 wire protocol to a custom RS422 wire protocol that connects to the Naomi itself. It is beneificial to be able to talk directly to the custom RS422 wire protocol so that the extra intermediary board is not required. The custom RS422 protocol is described below:
-
-The protocol baud rate runs at 2 Mega Baud (2,000,000).
-
-
-The voltage levels are the same as the standard RS422 spec.
-
-
-When receiving a packet, each data byte will be prepended with an address byte. On derby owners club this is 0x01.
-
-
-An example of a raw RS422 packet is here:
+Baud Rate: 2,000,000
+Pairty: None
+Bytesize: 8 Bytes
+StopBits: 1 Byte
+RTS/CTS: NO
 
 ```
-0x01 0x02 0x01 0x03 0x01 0x04 0x01 0x05
+packet = read(2)
+
+input_buffer = []
+output_buffer = []
+
+if packet[0] == 0x01:
+	write(packet)
+	input_buffer.add(packet[1])
+
+if packet[0] == 0x80:
+	if output_buffer.is_empty():
+		write({0x80, 0x00})
+	else:
+		write({0x80, 0x40})
+if packet[0] == 0x81:
+	write({0x81, output_buffer.pop(1)})
+
 ```
 
+In english:
 
-The actual RS232 packet from this data, which is grabbed by simply removing the leading `0x01` bytes is the following:
+Read 2 bytes at a time.
+If the first byte is 0x01, write back out those 2 bytes, and add the second byte to the input buffer.
+If the first byte is 0x80, check if the output buffer is empty. If it is empty reply 0x80, 0x00 if it is not empty reply 0x80, 0x40.
+If the first byte is 0x81, reply with 0x81, [1 byte from the output buffer].
 
-```
-0x02 0x03 0x04 0x05
-```
-
-When sending a packet...
+Garbage bytes may be sent after the 0x03 stop byte. These must be written back out, but should be discarded when processing the input packet.
