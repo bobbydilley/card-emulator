@@ -79,6 +79,18 @@ int serialIO = -1;
 
 typedef enum
 {
+	DERBY_OWNERS_CLUB,
+	DERBY_OWNERS_CLUB_RS232,
+	WANGAN_MIDNIGHT_MAXIMUM_TUNE_3,
+	F_ZERO_AX,
+	F_ZERO_AX_MONSTER_RIDE,
+	MARIO_KART_ARCADE_GP,
+	MARIO_KART_ARCADE_GP_2,
+	INITIAL_D,
+} Game;
+
+typedef enum
+{
 	NOT_INSERTED,
 	INSERTED_IN_FRONT,
 	UNDER_PRINT_HEAD,
@@ -235,8 +247,27 @@ int setSerialAttributes(int fd, int myBaud, int parity, int flow)
 	return 0;
 }
 
-int readBytes(unsigned char *buffer, int amount)
+int readBytes(unsigned char *buffer, int amount, int rs422Mode)
 {
+	if (rs422Mode)
+	{
+		if (rs422InputBuffer.head == rs422InputBuffer.tail)
+			return 0;
+
+		int size = BUFFER_SIZE + rs422InputBuffer.head - rs422InputBuffer.tail;
+		if (rs422InputBuffer.head >= rs422InputBuffer.tail)
+			size = rs422InputBuffer.head - rs422InputBuffer.tail;
+
+		memcpy(buffer, &rs422InputBuffer.buffer[rs422InputBuffer.tail], size);
+
+		rs422InputBuffer.tail += size;
+
+		if(rs422InputBuffer.tail > BUFFER_SIZE)
+			rs422InputBuffer.tail -= BUFFER_SIZE;
+
+		return size;
+	}
+
 	fd_set fd_serial;
 	struct timeval tv;
 
@@ -257,10 +288,31 @@ int readBytes(unsigned char *buffer, int amount)
 	return read(serialIO, buffer, amount);
 }
 
-int writeBytes(unsigned char *buffer, int amount, int output)
+int writeBytes(unsigned char *buffer, int amount, int rs422Mode)
 {
 	if (amount < 1)
 		return 0;
+
+	if (rs422Mode)
+	{
+		if (rs422OutputBuffer.head + 1 == rs422OutputBuffer.tail)
+			return 0;
+
+		int size = BUFFER_SIZE + rs422OutputBuffer.head - rs422OutputBuffer.tail;
+		if (rs422OutputBuffer.head >= rs422OutputBuffer.tail)
+			size = rs422OutputBuffer.head - rs422OutputBuffer.tail;
+
+		int sizeWritten = BUFFER_SIZE - size < amount ? BUFFER_SIZE - size : amount;
+
+		memcpy(&rs422OutputBuffer.buffer[rs422InputBuffer.head], buffer, sizeWritten);
+
+		rs422OutputBuffer.head += sizeWritten;
+
+		if(rs422OutputBuffer.head > BUFFER_SIZE)
+			rs422OutputBuffer.head -= BUFFER_SIZE;
+
+		return sizeWritten;
+	}
 
 	printf("writeBytes: ");
 	for (int i = 0; i < amount; i++)
@@ -300,7 +352,7 @@ int writePacket(unsigned char *packet, int length, int rs422Mode)
 
 	outputPacket[index++] = checksum;
 
-	writeBytes(outputPacket, (length + 4), 1);
+	writeBytes(outputPacket, (length + 4), rs422Mode);
 }
 
 /**
@@ -322,7 +374,7 @@ int readPacket(unsigned char *packet, int rs422Mode)
 
 	while (!finished)
 	{
-		int bytesRead = readBytes(inputBuffer + bytesAvailable, BUFFER_SIZE - bytesAvailable);
+		int bytesRead = readBytes(inputBuffer + bytesAvailable, BUFFER_SIZE - bytesAvailable, rs422Mode);
 
 		if (bytesRead < 0)
 			return -1;
@@ -429,7 +481,7 @@ void *rs422Thread(void *vargp)
 	while (arguments->running)
 	{
 		unsigned char buffer[2];
-		int n = readBytes(buffer, 2);
+		int n = readBytes(buffer, 2, 0);
 
 		if (n < 1)
 			continue;
@@ -437,7 +489,7 @@ void *rs422Thread(void *vargp)
 		if (n == 1)
 		{
 			printf("Warning: One byte read\n");
-			n += readBytes(buffer + n, 1);
+			n += readBytes(buffer + n, 1, 0);
 		}
 
 		switch (buffer[0])
@@ -457,7 +509,6 @@ void *rs422Thread(void *vargp)
 
 			if (++rs422InputBuffer.head == BUFFER_SIZE)
 				rs422InputBuffer.head = 0;
-
 		}
 		break;
 
@@ -479,7 +530,7 @@ void *rs422Thread(void *vargp)
 			{
 				outputBuffer[1] = rs422OutputBuffer.buffer[rs422OutputBuffer.tail];
 
-				if(++rs422OutputBuffer.tail == BUFFER_SIZE)
+				if (++rs422OutputBuffer.tail == BUFFER_SIZE)
 					rs422OutputBuffer.tail = 0;
 			}
 			writeBytes(outputBuffer, 2, 0);
@@ -499,6 +550,8 @@ void *rs422Thread(void *vargp)
 int main(int argc, char *argv[])
 {
 	printf("Card Emulator Version 0.1\n\n");
+
+	Game game = DERBY_OWNERS_CLUB;
 
 	char *serialPath = "/dev/ttyUSB0";
 	char *cardPath = "card.bin";
@@ -806,7 +859,7 @@ int main(int argc, char *argv[])
 
 		// Send the ack reply
 		unsigned char ack[] = {ACK};
-		writeBytes(ack, 1, 1);
+		writeBytes(ack, 1, rs422Mode);
 
 		// Seperate for debugging purposes
 		printf("\n");
