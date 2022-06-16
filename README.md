@@ -1,8 +1,11 @@
-# card-emulator
+# Card Reader Emulator
 
-A SEGA Card reader/writer emulator in C
+A Sanwa Card reader/writer emulator written in C. The card reader emulator currently supports the following games:
 
-## Building
+- Derby Owners Club on Naomi
+- Mario Kart Arcade GP 1 & 2 on Triforce
+
+## Building & Running
 
 Simply install the build-essential dependency and run make.
 
@@ -15,4 +18,24 @@ To run the program simpy call it from the command line:
 
 ```
 ./build/card-emulator
+```
+
+## Configuration
+
+To specify which game to emulate, pass the `--game` parameter:
+
+```
+./build/card-emulator --game derby-owners-club
+```
+
+To specify the file path to the card data, pass the `--card` parameter:
+
+```
+./build/card-emulator --card mario-kart-bobby.bin
+```
+
+To specify the path to the serial convertor, pass the `--path` parameter:
+
+```
+./build/card-emulator --path /dev/ttyUSB1
 ```

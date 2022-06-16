@@ -9,7 +9,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define TIMEOUT_SELECT 200
+#define TIMEOUT_SELECT 500
 #define BUFFER_SIZE 1024
 
 unsigned char inputBuffer[BUFFER_SIZE];
@@ -71,9 +71,6 @@ int serialIO = -1;
 #define NEW_CARD 0xB0
 #define CANCEL 0x40
 
-/* Naomi RS422 Response Bytes */
-#define ERROR_RESPONSE 0x24
-
 /* Data sizes */
 #define TRACK_SIZE 69
 
@@ -122,7 +119,9 @@ typedef struct
 } CircularBuffer;
 
 CircularBuffer rs422InputBuffer;
+pthread_mutex_t rs422InputMutex;
 CircularBuffer rs422OutputBuffer;
+pthread_mutex_t rs422OutputMutex;
 
 /**
  * Generates card status based upon card struct for both status modes
@@ -218,8 +217,8 @@ int setSerialAttributes(int fd, int myBaud, int parity, int flow)
 	}
 
 	// SET INTER BYTE TIMEOUTS TO 0
-	options.c_cc[VMIN] = 1;
-	options.c_cc[VTIME] = 1;
+	options.c_cc[VMIN] = 200;
+	options.c_cc[VTIME] = 200;
 
 	// SET OPTIONS
 	tcsetattr(fd, TCSANOW, &options);
@@ -251,6 +250,8 @@ int readBytes(unsigned char *buffer, int amount, int rs422Mode)
 {
 	if (rs422Mode)
 	{
+		pthread_mutex_lock(&rs422InputMutex);
+
 		if (rs422InputBuffer.head == rs422InputBuffer.tail)
 			return 0;
 
@@ -264,6 +265,8 @@ int readBytes(unsigned char *buffer, int amount, int rs422Mode)
 			rs422InputBuffer.tail = rs422InputBuffer.tail + size - BUFFER_SIZE;
 		else
 			rs422InputBuffer.tail += size;
+
+		pthread_mutex_unlock(&rs422InputMutex);
 
 		return size;
 	}
@@ -295,6 +298,8 @@ int writeBytes(unsigned char *buffer, int amount, int rs422Mode)
 
 	if (rs422Mode)
 	{
+		pthread_mutex_lock(&rs422OutputMutex);
+
 		if (rs422OutputBuffer.head + 1 == rs422OutputBuffer.tail)
 			return 0;
 
@@ -310,6 +315,8 @@ int writeBytes(unsigned char *buffer, int amount, int rs422Mode)
 			rs422OutputBuffer.head = rs422OutputBuffer.head + sizeWritten - BUFFER_SIZE;
 		else
 			rs422OutputBuffer.head += sizeWritten;
+
+		pthread_mutex_unlock(&rs422OutputMutex);
 
 		return sizeWritten;
 	}
@@ -473,15 +480,22 @@ void *rs422Thread(void *vargp)
 {
 	RS422ThreadArguments *arguments = (RS422ThreadArguments *)vargp;
 
-	printf("Info: Starting RS422 Thread...\n");
-
 	rs422InputBuffer.head = rs422OutputBuffer.head = 0;
 	rs422InputBuffer.tail = rs422OutputBuffer.tail = 0;
+
+	// Initialise the mutexs
+	if (pthread_mutex_init(&rs422InputMutex, NULL) != 0 || pthread_mutex_init(&rs422OutputMutex, NULL) != 0)
+	{
+		printf("Error: Mutex creation failed\n");
+		arguments->running = 0;
+	}
 
 	while (arguments->running)
 	{
 		unsigned char buffer[2];
-		int n = readBytes(buffer, 2, 0);
+
+		int bytesLeft = 2;
+		int n = readBytes(buffer + (2 - bytesLeft), bytesLeft, 0);
 
 		if (n < 1)
 			continue;
@@ -498,10 +512,13 @@ void *rs422Thread(void *vargp)
 		{
 			writeBytes(buffer, 2, 0);
 
+			pthread_mutex_lock(&rs422InputMutex);
+
 			if (rs422InputBuffer.head + 1 == rs422InputBuffer.tail)
 			{
 				printf("Error: Buffer full\n");
 				arguments->running = 0;
+				pthread_mutex_unlock(&rs422InputMutex);
 				continue;
 			}
 
@@ -511,22 +528,31 @@ void *rs422Thread(void *vargp)
 				rs422InputBuffer.head = 0;
 			else
 				rs422InputBuffer.head++;
+
+			pthread_mutex_unlock(&rs422InputMutex);
 		}
 		break;
 
 		case 0x80:
 		{
+			pthread_mutex_lock(&rs422OutputMutex);
+
 			unsigned char outputBuffer[2] = {0x80, 0x00}; // Empty
 			if (rs422OutputBuffer.head != rs422OutputBuffer.tail)
 			{
 				outputBuffer[1] = 0x40; // Not empty
 			}
+
+			pthread_mutex_unlock(&rs422OutputMutex);
+
 			writeBytes(outputBuffer, 2, 0);
 		}
 		break;
 
 		case 0x81:
 		{
+			pthread_mutex_lock(&rs422OutputMutex);
+
 			unsigned char outputBuffer[2] = {0x81, 0x00}; // Empty
 			if (rs422OutputBuffer.head != rs422OutputBuffer.tail)
 			{
@@ -537,6 +563,9 @@ void *rs422Thread(void *vargp)
 				else
 					rs422OutputBuffer.tail++;
 			}
+
+			pthread_mutex_unlock(&rs422OutputMutex);
+
 			writeBytes(outputBuffer, 2, 0);
 		}
 		break;
@@ -546,16 +575,14 @@ void *rs422Thread(void *vargp)
 			arguments->running = 0;
 			break;
 		}
-
-		//printf("IN TAIL %d HEAD %d OUT TAIL %d HEAD %d\n", rs422InputBuffer.tail, rs422InputBuffer.head, rs422OutputBuffer.tail, rs422OutputBuffer.head);
 	}
 
-	printf("Info: Stopping RS422 Thread...\n");
+	printf("RS422 Thread Stopped.\n");
 }
 
 int main(int argc, char *argv[])
 {
-	printf("Card Emulator Version 0.1\n\n");
+	printf("Card Emulator Version 0.2\n\n");
 
 	Game game = DERBY_OWNERS_CLUB;
 
@@ -664,14 +691,6 @@ int main(int argc, char *argv[])
 
 		switch (inputPacket[0])
 		{
-
-		// Naomi RS422 Returned the ERROR Response
-		case ERROR_RESPONSE:
-		{
-			printf("Error: Naomi RS422 Error Response\n");
-		}
-		break;
-
 		// Initialise the card reader unit
 		case INIT:
 		{
@@ -702,9 +721,8 @@ int main(int argc, char *argv[])
 		// Set the shutter on the front of the reader to open/closed
 		case SET_SHUTTER:
 		{
-			printf("Command: Set Shutter\n");
 			reader.coverClosed = (inputPacket[4] == 0x31);
-			printf("Shutter closed is %d\n", reader.coverClosed);
+			printf("Command: %s shutter\n", reader.coverClosed ? "Close" : "Open");
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -762,6 +780,7 @@ int main(int argc, char *argv[])
 				}
 			}
 
+			reader.cardPosition = UNDER_READER;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -799,6 +818,7 @@ int main(int argc, char *argv[])
 				}
 			}
 
+			reader.cardPosition = UNDER_READER;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -811,6 +831,7 @@ int main(int argc, char *argv[])
 			for (int i = 0; i < 3; i++)
 				for (int j = 0; j < TRACK_SIZE; j++)
 					tracks[i][j] = 0x00;
+			reader.cardPosition = UNDER_READER;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -820,6 +841,7 @@ int main(int argc, char *argv[])
 		case PRINT:
 		{
 			printf("Command: Print\n");
+			reader.cardPosition = UNDER_PRINT_HEAD;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -840,7 +862,7 @@ int main(int argc, char *argv[])
 		case CANCEL:
 		{
 			printf("Command: Cancel\n");
-			reader.cardPosition = NOT_INSERTED;
+			//reader.cardPosition = NOT_INSERTED;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -849,7 +871,7 @@ int main(int argc, char *argv[])
 		case SET_PRINT_PARAM:
 		{
 			printf("Command: Set print param\n");
-			reader.cardPosition = UNDER_PRINT_HEAD;
+			//reader.cardPosition = UNDER_PRINT_HEAD;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
