@@ -509,7 +509,6 @@ void *rs422Thread(void *vargp)
 				rs422InputBuffer.head = 0;
 			else
 				rs422InputBuffer.head++;
-
 		}
 		break;
 
