@@ -119,9 +119,9 @@ typedef struct
 } CircularBuffer;
 
 CircularBuffer rs422InputBuffer;
-pthread_mutex_t rs422InputMutex;
+//pthread_mutex_t rs422InputMutex;
 CircularBuffer rs422OutputBuffer;
-pthread_mutex_t rs422OutputMutex;
+//pthread_mutex_t rs422OutputMutex;
 
 /**
  * Generates card status based upon card struct for both status modes
@@ -250,7 +250,7 @@ int readBytes(unsigned char *buffer, int amount, int rs422Mode)
 {
 	if (rs422Mode)
 	{
-		pthread_mutex_lock(&rs422InputMutex);
+		//pthread_mutex_lock(&rs422InputMutex);
 
 		if (rs422InputBuffer.head == rs422InputBuffer.tail)
 			return 0;
@@ -266,7 +266,7 @@ int readBytes(unsigned char *buffer, int amount, int rs422Mode)
 		else
 			rs422InputBuffer.tail += size;
 
-		pthread_mutex_unlock(&rs422InputMutex);
+		//pthread_mutex_unlock(&rs422InputMutex);
 
 		return size;
 	}
@@ -298,27 +298,26 @@ int writeBytes(unsigned char *buffer, int amount, int rs422Mode)
 
 	if (rs422Mode)
 	{
-		pthread_mutex_lock(&rs422OutputMutex);
-
 		if (rs422OutputBuffer.head + 1 == rs422OutputBuffer.tail)
 			return 0;
 
-		int size = BUFFER_SIZE + rs422OutputBuffer.head - rs422OutputBuffer.tail;
-		if (rs422OutputBuffer.head >= rs422OutputBuffer.tail)
-			size = rs422OutputBuffer.head - rs422OutputBuffer.tail;
-
-		int sizeWritten = BUFFER_SIZE - size < amount ? BUFFER_SIZE - size : amount;
-
-		memcpy(&rs422OutputBuffer.buffer[rs422OutputBuffer.head], buffer, sizeWritten);
-
-		if (rs422OutputBuffer.head + sizeWritten > BUFFER_SIZE)
-			rs422OutputBuffer.head = rs422OutputBuffer.head + sizeWritten - BUFFER_SIZE;
+		if (rs422OutputBuffer.head + amount > BUFFER_SIZE)
+		{
+			int firstPart = BUFFER_SIZE - rs422OutputBuffer.head;
+			int secondPart = amount - firstPart;
+			memcpy(&rs422OutputBuffer.buffer[rs422OutputBuffer.head], buffer, firstPart);
+			memcpy(&rs422OutputBuffer.buffer[0], buffer + firstPart, secondPart);
+			rs422OutputBuffer.head = secondPart;
+		}
 		else
-			rs422OutputBuffer.head += sizeWritten;
+		{
+			memcpy(&rs422OutputBuffer.buffer[rs422OutputBuffer.head], buffer, amount);
+			rs422OutputBuffer.head += amount;
+		}
 
-		pthread_mutex_unlock(&rs422OutputMutex);
+		//pthread_mutex_unlock(&rs422OutputMutex);
 
-		return sizeWritten;
+		return amount;
 	}
 
 	/*printf("writeBytes: ");
@@ -484,26 +483,26 @@ void *rs422Thread(void *vargp)
 	rs422InputBuffer.tail = rs422OutputBuffer.tail = 0;
 
 	// Initialise the mutexs
-	if (pthread_mutex_init(&rs422InputMutex, NULL) != 0 || pthread_mutex_init(&rs422OutputMutex, NULL) != 0)
+	/*if (pthread_mutex_init(&rs422InputMutex, NULL) != 0 || pthread_mutex_init(&rs422OutputMutex, NULL) != 0)
 	{
 		printf("Error: Mutex creation failed\n");
 		arguments->running = 0;
-	}
+	}*/
 
 	while (arguments->running)
 	{
 		unsigned char buffer[2];
 
 		int bytesLeft = 2;
-		int n = readBytes(buffer + (2 - bytesLeft), bytesLeft, 0);
 
-		if (n < 1)
-			continue;
+		int bytesRead = 0;
 
-		if (n == 1)
+		while (bytesLeft > 0)
 		{
-			printf("Warning: One byte read\n");
-			n += readBytes(buffer + n, 1, 0);
+			bytesRead = readBytes(buffer + (2 - bytesLeft), bytesLeft, 0);
+			if (bytesRead < 1)
+				continue;
+			bytesLeft -= bytesRead;
 		}
 
 		switch (buffer[0])
@@ -512,13 +511,13 @@ void *rs422Thread(void *vargp)
 		{
 			writeBytes(buffer, 2, 0);
 
-			pthread_mutex_lock(&rs422InputMutex);
+			//pthread_mutex_lock(&rs422InputMutex);
 
 			if (rs422InputBuffer.head + 1 == rs422InputBuffer.tail)
 			{
 				printf("Error: Buffer full\n");
 				arguments->running = 0;
-				pthread_mutex_unlock(&rs422InputMutex);
+				//pthread_mutex_unlock(&rs422InputMutex);
 				continue;
 			}
 
@@ -529,13 +528,13 @@ void *rs422Thread(void *vargp)
 			else
 				rs422InputBuffer.head++;
 
-			pthread_mutex_unlock(&rs422InputMutex);
+			//pthread_mutex_unlock(&rs422InputMutex);
 		}
 		break;
 
 		case 0x80:
 		{
-			pthread_mutex_lock(&rs422OutputMutex);
+			//pthread_mutex_lock(&rs422OutputMutex);
 
 			unsigned char outputBuffer[2] = {0x80, 0x00}; // Empty
 			if (rs422OutputBuffer.head != rs422OutputBuffer.tail)
@@ -543,7 +542,7 @@ void *rs422Thread(void *vargp)
 				outputBuffer[1] = 0x40; // Not empty
 			}
 
-			pthread_mutex_unlock(&rs422OutputMutex);
+			//pthread_mutex_unlock(&rs422OutputMutex);
 
 			writeBytes(outputBuffer, 2, 0);
 		}
@@ -551,7 +550,7 @@ void *rs422Thread(void *vargp)
 
 		case 0x81:
 		{
-			pthread_mutex_lock(&rs422OutputMutex);
+			//pthread_mutex_lock(&rs422OutputMutex);
 
 			unsigned char outputBuffer[2] = {0x81, 0x00}; // Empty
 			if (rs422OutputBuffer.head != rs422OutputBuffer.tail)
@@ -564,7 +563,7 @@ void *rs422Thread(void *vargp)
 					rs422OutputBuffer.tail++;
 			}
 
-			pthread_mutex_unlock(&rs422OutputMutex);
+			//pthread_mutex_unlock(&rs422OutputMutex);
 
 			writeBytes(outputBuffer, 2, 0);
 		}
@@ -586,7 +585,7 @@ int main(int argc, char *argv[])
 
 	Game game = DERBY_OWNERS_CLUB;
 
-	char *serialPath = "/dev/ttyUSB1";
+	char *serialPath = "/dev/ttyUSB0";
 	char *cardPath = "card.bin";
 
 	int rs422Mode = 1;
@@ -647,12 +646,12 @@ int main(int argc, char *argv[])
 		if (inputPacketLength < 1)
 			continue;
 
-		printf("ReadPacket: ");
+		/*printf("ReadPacket: ");
 		for (int i = 0; i < inputPacketLength; i++)
 		{
 			printf("%X ", inputPacket[i]);
 		}
-		printf("\n");
+		printf("\n");*/
 
 		// Should we send a packet
 		if (inputPacketLength == 1 && inputPacket[0] == ENQUIRY)
@@ -678,11 +677,17 @@ int main(int argc, char *argv[])
 			if (reader.jobStatus == STATUS_RUNNING_COMMAND)
 				reader.jobStatus = STATUS_NO_JOB;
 
-			if (reader.cardPosition == NOT_INSERTED)
+			/*if (reader.cardPosition == NOT_INSERTED)
+			{
 				reader.cardPosition = INSERTED_IN_FRONT;
+				printf("Info: Inserted card\n");
+			}*/
 
 			if (reader.cardPosition == EJECTING_CARD)
+			{
 				reader.cardPosition = NOT_INSERTED;
+				printf("Info: Removing card\n");
+			}
 
 			continue;
 		}
@@ -722,7 +727,7 @@ int main(int argc, char *argv[])
 		case SET_SHUTTER:
 		{
 			reader.coverClosed = (inputPacket[4] == 0x31);
-			printf("Command: %s shutter\n", reader.coverClosed ? "Close" : "Open");
+			printf("Command: %s shutter\n", reader.coverClosed ? "Open" : "Closed");
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -753,11 +758,11 @@ int main(int argc, char *argv[])
 		// Read data from the card
 		case READ:
 		{
-			printf("Command: Read\n");
+			printf("Command: Read (");
 
 			if (reader.cardPosition == NOT_INSERTED || reader.cardPosition == EJECTING_CARD)
 			{
-				printf("Error: Card not inserted\n");
+				printf("Error Card not inserted)\n");
 				reader.jobStatus = STATUS_WAITING_FOR_CARD;
 				break;
 			}
@@ -775,10 +780,12 @@ int main(int argc, char *argv[])
 				{
 					if (trackIndex[i] == -1)
 						continue;
+					printf("Track%d, ", i);
 					for (int j = 0; j < TRACK_SIZE; j++)
 						outputPacketData[outputPacketDataLength++] = tracks[trackIndex[i]][j];
 				}
 			}
+			printf(")\n");
 
 			reader.cardPosition = UNDER_READER;
 			reader.readerStatus = STATUS_NO_ERR;
@@ -789,11 +796,11 @@ int main(int argc, char *argv[])
 		// Write data to the card
 		case WRITE:
 		{
-			printf("Command: Write\n");
+			printf("Command: Write (");
 
 			if (reader.cardPosition == NOT_INSERTED || reader.cardPosition == EJECTING_CARD)
 			{
-				printf("Error: Card not inserted\n");
+				printf("Error Card not inserted)\n");
 				reader.jobStatus = STATUS_WAITING_FOR_CARD;
 				break;
 			}
@@ -812,10 +819,11 @@ int main(int argc, char *argv[])
 				{
 					if (trackIndex[i] == -1)
 						continue;
-
+					printf("Track%d, ", i);
 					for (int j = 0; j < TRACK_SIZE; j++)
 						tracks[trackIndex[i]][j] = inputPacket[inputPacketPointer++];
 				}
+				printf(")\n");
 			}
 
 			reader.cardPosition = UNDER_READER;
@@ -888,10 +896,10 @@ int main(int argc, char *argv[])
 		// Send the ack reply
 		unsigned char ack[] = {ACK};
 		int n = writeBytes(ack, 1, rs422Mode);
-		printf("ACK %d\n", n);
+		/*printf("ACK %d\n", n);*/
 
 		// Seperate for debugging purposes
-		printf("\n");
+		//printf("\n");
 	}
 
 	if (rs422Mode && rs422ThreadID)
