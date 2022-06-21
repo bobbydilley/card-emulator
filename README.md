@@ -20,22 +20,8 @@ To run the program simpy call it from the command line:
 ./build/card-emulator
 ```
 
-## Configuration
+## Issues
 
-To specify which game to emulate, pass the `--game` parameter:
-
-```
-./build/card-emulator --game derby-owners-club
-```
-
-To specify the file path to the card data, pass the `--card` parameter:
-
-```
-./build/card-emulator --card mario-kart-bobby.bin
-```
-
-To specify the path to the serial convertor, pass the `--path` parameter:
-
-```
-./build/card-emulator --path /dev/ttyUSB1
-```
+- Currently there is no control over inserting a new card
+- Cards are only saved to ram and are deleted once the program is stopped
+- You must change the settings via code
