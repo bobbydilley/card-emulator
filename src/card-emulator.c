@@ -1,14 +1,15 @@
+#include <fcntl.h>
+#include <linux/serial.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <termios.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
-#include <linux/serial.h>
 #include <string.h>
-#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 #include <time.h>
+#include <unistd.h>
 
-#define TIMEOUT_SELECT 200
+#define TIMEOUT_SELECT 500
 #define BUFFER_SIZE 1024
 
 unsigned char inputBuffer[BUFFER_SIZE];
@@ -66,10 +67,24 @@ int serialIO = -1;
 #define WRITE 0x53
 #define ERASE 0x7D
 #define PRINT 0x7C
+#define SET_PRINT_PARAM 0x78
 #define NEW_CARD 0xB0
+#define CANCEL 0x40
 
 /* Data sizes */
 #define TRACK_SIZE 69
+
+typedef enum
+{
+	DERBY_OWNERS_CLUB,
+	DERBY_OWNERS_CLUB_RS232,
+	WANGAN_MIDNIGHT_MAXIMUM_TUNE_3,
+	F_ZERO_AX,
+	F_ZERO_AX_MONSTER_RIDE,
+	MARIO_KART_ARCADE_GP,
+	MARIO_KART_ARCADE_GP_2,
+	INITIAL_D,
+} Game;
 
 typedef enum
 {
@@ -89,6 +104,22 @@ typedef struct
 	unsigned char readerStatus;
 	unsigned char jobStatus;
 } CardReader;
+
+typedef struct
+{
+	int fd;
+	int *running;
+} RS422ThreadArguments;
+
+typedef struct
+{
+	unsigned char buffer[BUFFER_SIZE];
+	int head;
+	int tail;
+} CircularBuffer;
+
+CircularBuffer rs422InputBuffer;
+CircularBuffer rs422OutputBuffer;
 
 /**
  * Generates card status based upon card struct for both status modes
@@ -123,7 +154,7 @@ char getCardStatus(CardReader *reader, int shutterMode)
 	}
 
 	// Shutters
-	char result = 1 << (reader->coverClosed & 0x01) ? 6 : 7;
+	char result = 1 << ((reader->coverClosed & 0x01) ? 7 : 6);
 
 	// Dispenser Full
 	result |= (reader->dispenserFull & 0x01) << 5;
@@ -152,7 +183,7 @@ char getCardStatus(CardReader *reader, int shutterMode)
 	return result;
 }
 
-int setSerialAttributes(int fd, int myBaud)
+int setSerialAttributes(int fd, int myBaud, int parity, int flow)
 {
 	struct termios options;
 	int status;
@@ -163,25 +194,41 @@ int setSerialAttributes(int fd, int myBaud)
 	cfsetospeed(&options, myBaud);
 
 	options.c_cflag |= (CLOCAL | CREAD);
-	options.c_cflag &= ~PARENB;
-	options.c_cflag &= ~CSTOPB;
+	options.c_cflag &= ~PARENB; // Disable Pairty Bit (EVEN)
+	options.c_cflag &= ~CSTOPB; // Set one stop bit
 	options.c_cflag &= ~CSIZE;
-	options.c_cflag |= CS8;
+	options.c_cflag |= CS8; // 8 BIT SIZE
 	options.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
 	options.c_oflag &= ~OPOST;
 
-	options.c_cc[VMIN] = 0;
-	options.c_cc[VTIME] = 0;
+	// SET EVEN PARITY
+	if (parity)
+	{
+		options.c_cflag |= PARENB;
+		options.c_cflag &= ~PARODD;
+	}
 
+	// ENABLE FLOW CONTROL
+	if (flow)
+	{
+		options.c_cflag |= CRTSCTS;
+	}
+
+	// SET INTER BYTE TIMEOUTS TO 0
+	options.c_cc[VMIN] = 200;
+	options.c_cc[VTIME] = 200;
+
+	// SET OPTIONS
 	tcsetattr(fd, TCSANOW, &options);
 
+	/*
 	ioctl(fd, TIOCMGET, &status);
 
 	status |= TIOCM_DTR;
 	status |= TIOCM_RTS;
 
 	ioctl(fd, TIOCMSET, &status);
-
+*/
 	usleep(100 * 1000); // 10mS
 
 	struct serial_struct serial_settings;
@@ -197,8 +244,27 @@ int setSerialAttributes(int fd, int myBaud)
 	return 0;
 }
 
-int readBytes(unsigned char *buffer, int amount)
+int readBytes(unsigned char *buffer, int amount, int rs422Mode)
 {
+	if (rs422Mode)
+	{
+		if (rs422InputBuffer.head == rs422InputBuffer.tail)
+			return 0;
+
+		int size = BUFFER_SIZE + rs422InputBuffer.head - rs422InputBuffer.tail;
+		if (rs422InputBuffer.head >= rs422InputBuffer.tail)
+			size = rs422InputBuffer.head - rs422InputBuffer.tail;
+
+		memcpy(buffer, &rs422InputBuffer.buffer[rs422InputBuffer.tail], size);
+
+		if (rs422InputBuffer.tail + size > BUFFER_SIZE)
+			rs422InputBuffer.tail = rs422InputBuffer.tail + size - BUFFER_SIZE;
+		else
+			rs422InputBuffer.tail += size;
+
+		return size;
+	}
+
 	fd_set fd_serial;
 	struct timeval tv;
 
@@ -219,14 +285,39 @@ int readBytes(unsigned char *buffer, int amount)
 	return read(serialIO, buffer, amount);
 }
 
-int writeBytes(unsigned char *buffer, int amount)
+int writeBytes(unsigned char *buffer, int amount, int rs422Mode)
 {
-	/**printf("writeBytes: ");
+	if (amount < 1)
+		return 0;
+
+	if (rs422Mode)
+	{
+		if (rs422OutputBuffer.head + 1 == rs422OutputBuffer.tail)
+			return 0;
+
+		if (rs422OutputBuffer.head + amount > BUFFER_SIZE)
+		{
+			int firstPart = BUFFER_SIZE - rs422OutputBuffer.head;
+			int secondPart = amount - firstPart;
+			memcpy(&rs422OutputBuffer.buffer[rs422OutputBuffer.head], buffer, firstPart);
+			memcpy(&rs422OutputBuffer.buffer[0], buffer + firstPart, secondPart);
+			rs422OutputBuffer.head = secondPart;
+		}
+		else
+		{
+			memcpy(&rs422OutputBuffer.buffer[rs422OutputBuffer.head], buffer, amount);
+			rs422OutputBuffer.head += amount;
+		}
+
+		return amount;
+	}
+
+	/*printf("writeBytes: ");
 	for (int i = 0; i < amount; i++)
 	{
 		printf("%X ", buffer[i]);
 	}
-	printf("\n");**/
+	printf("\n");*/
 
 	return write(serialIO, buffer, amount);
 }
@@ -259,7 +350,7 @@ int writePacket(unsigned char *packet, int length, int rs422Mode)
 
 	outputPacket[index++] = checksum;
 
-	writeBytes(outputPacket, (length + 4));
+	writeBytes(outputPacket, (length + 4), rs422Mode);
 }
 
 /**
@@ -281,7 +372,7 @@ int readPacket(unsigned char *packet, int rs422Mode)
 
 	while (!finished)
 	{
-		int bytesRead = readBytes(inputBuffer + bytesAvailable, BUFFER_SIZE - bytesAvailable);
+		int bytesRead = readBytes(inputBuffer + bytesAvailable, BUFFER_SIZE - bytesAvailable, rs422Mode);
 
 		if (bytesRead < 0)
 			return -1;
@@ -293,15 +384,15 @@ int readPacket(unsigned char *packet, int rs422Mode)
 			switch (phase)
 			{
 			case 0:
-				if (rs422Mode && inputBuffer[index] == 0x01)
-					index++;
-
-				if (inputBuffer[index] != START_OF_TEXT)
+				if (inputBuffer[index] == ENQUIRY)
 				{
 					packet[0] = inputBuffer[index];
 					return 1;
 				}
-				phase++;
+				else if (inputBuffer[index] == START_OF_TEXT)
+				{
+					phase++;
+				}
 				break;
 			case 1:
 				length = inputBuffer[index];
@@ -326,7 +417,7 @@ int readPacket(unsigned char *packet, int rs422Mode)
 			default:
 				break;
 			}
-			index += 1 + (rs422Mode == 1);
+			index += 1;
 		}
 	}
 
@@ -369,18 +460,114 @@ void getTrackIndex(unsigned char track, int *trackIndex)
 	}
 }
 
+/**
+ * This thread deals with the RS422 ring network communication
+ * 
+ * Derby Owners Club uses a conversion board that speaks RS422 and
+ * converts to RS232. This thread will act as that conversion board
+ * and fill the input/output buffer with correct packets.
+ **/
+void *rs422Thread(void *vargp)
+{
+	RS422ThreadArguments *arguments = (RS422ThreadArguments *)vargp;
+
+	rs422InputBuffer.head = rs422OutputBuffer.head = 0;
+	rs422InputBuffer.tail = rs422OutputBuffer.tail = 0;
+
+	while (arguments->running)
+	{
+		unsigned char buffer[2];
+
+		int bytesLeft = 2;
+
+		int bytesRead = 0;
+
+		while (bytesLeft > 0)
+		{
+			bytesRead = readBytes(buffer + (2 - bytesLeft), bytesLeft, 0);
+			if (bytesRead < 1)
+				continue;
+			bytesLeft -= bytesRead;
+		}
+
+		switch (buffer[0])
+		{
+		case 0x01:
+		{
+			writeBytes(buffer, 2, 0);
+
+			if (rs422InputBuffer.head + 1 == rs422InputBuffer.tail)
+			{
+				printf("Error: Buffer full\n");
+				arguments->running = 0;
+				continue;
+			}
+
+			rs422InputBuffer.buffer[rs422InputBuffer.head] = buffer[1];
+
+			if (rs422InputBuffer.head + 1 == BUFFER_SIZE)
+				rs422InputBuffer.head = 0;
+			else
+				rs422InputBuffer.head++;
+		}
+		break;
+
+		case 0x80:
+		{
+			unsigned char outputBuffer[2] = {0x80, 0x00}; // Empty
+			if (rs422OutputBuffer.head != rs422OutputBuffer.tail)
+			{
+				outputBuffer[1] = 0x40; // Not empty
+			}
+			writeBytes(outputBuffer, 2, 0);
+		}
+		break;
+
+		case 0x81:
+		{
+			unsigned char outputBuffer[2] = {0x81, 0x00}; // Empty
+			if (rs422OutputBuffer.head != rs422OutputBuffer.tail)
+			{
+				outputBuffer[1] = rs422OutputBuffer.buffer[rs422OutputBuffer.tail];
+
+				if (rs422OutputBuffer.tail + 1 == BUFFER_SIZE)
+					rs422OutputBuffer.tail = 0;
+				else
+					rs422OutputBuffer.tail++;
+			}
+			writeBytes(outputBuffer, 2, 0);
+		}
+		break;
+
+		default:
+			printf("Error: RS422 Thread %d is an unknown byte\n", buffer[0]);
+			arguments->running = 0;
+			break;
+		}
+	}
+
+	printf("RS422 Thread Stopped.\n");
+}
+
 int main(int argc, char *argv[])
 {
-	printf("Card Emulator Version 0.1\n\n");
+	printf("Card Emulator Version 0.2\n\n");
+
+	Game game = DERBY_OWNERS_CLUB;
 
 	char *serialPath = "/dev/ttyUSB0";
 	char *cardPath = "card.bin";
 
-	int rs422Mode = 0;
-	int shutterMode = 0;
+	int rs422Mode = 1;
+	int shutterMode = 1;
+	int evenParity = 0;
+	int flowControl = 0;
+	int baudRate = B2000000;
 
 	printf("  Connection Mode: %s\n", rs422Mode ? "RS422 Mode" : "RS232 Mode");
-	printf("   Emulation Mode: %s\n\n", shutterMode ? "Shutter" : "No Shutter");
+	printf("   Emulation Mode: %s\n", shutterMode ? "Shutter" : "No Shutter");
+	printf("           Parity: %s\n", evenParity ? "Even" : "None");
+	printf("     Flow Control: %s\n\n", flowControl ? "RTS/CTS" : "None");
 
 	if ((serialIO = open(serialPath, O_RDWR | O_NOCTTY | O_SYNC | O_NDELAY)) < 0)
 	{
@@ -388,16 +575,25 @@ int main(int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
-	setSerialAttributes(serialIO, B9600);
+	setSerialAttributes(serialIO, baudRate, evenParity, flowControl);
+
+	pthread_t rs422ThreadID;
+	int running = 1;
+
+	if (rs422Mode)
+	{
+		RS422ThreadArguments arguments = {0};
+		arguments.fd = serialIO;
+		arguments.running = &running;
+		pthread_create(&rs422ThreadID, NULL, rs422Thread, &arguments);
+	}
 
 	CardReader reader = {0};
-	reader.dispenserFull = 0;
+	reader.dispenserFull = 1;
 	reader.coverClosed = 0;
 	reader.cardPosition = NOT_INSERTED;
 	reader.readerStatus = STATUS_NO_ERR;
 	reader.jobStatus = STATUS_NO_JOB;
-
-	int running = 1;
 
 	unsigned char lastCommand = 0x00;
 
@@ -420,14 +616,13 @@ int main(int argc, char *argv[])
 		if (inputPacketLength < 1)
 			continue;
 
-		/*
-		printf("ReadPacket: ");
+		/*printf("ReadPacket: ");
 		for (int i = 0; i < inputPacketLength; i++)
 		{
 			printf("%X ", inputPacket[i]);
 		}
-		printf("\n");
-*/
+		printf("\n");*/
+
 		// Should we send a packet
 		if (inputPacketLength == 1 && inputPacket[0] == ENQUIRY)
 		{
@@ -452,11 +647,17 @@ int main(int argc, char *argv[])
 			if (reader.jobStatus == STATUS_RUNNING_COMMAND)
 				reader.jobStatus = STATUS_NO_JOB;
 
-			if (reader.cardPosition == NOT_INSERTED)
+			/*if (reader.cardPosition == NOT_INSERTED)
+			{
 				reader.cardPosition = INSERTED_IN_FRONT;
+				printf("Info: Inserted card\n");
+			}*/
 
 			if (reader.cardPosition == EJECTING_CARD)
+			{
 				reader.cardPosition = NOT_INSERTED;
+				printf("Info: Removing card\n");
+			}
 
 			continue;
 		}
@@ -465,7 +666,6 @@ int main(int argc, char *argv[])
 
 		switch (inputPacket[0])
 		{
-
 		// Initialise the card reader unit
 		case INIT:
 		{
@@ -496,8 +696,8 @@ int main(int argc, char *argv[])
 		// Set the shutter on the front of the reader to open/closed
 		case SET_SHUTTER:
 		{
-			printf("Command: Set Shutter\n");
 			reader.coverClosed = (inputPacket[4] == 0x31);
+			printf("Command: %s shutter\n", reader.coverClosed ? "Open" : "Closed");
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -528,11 +728,11 @@ int main(int argc, char *argv[])
 		// Read data from the card
 		case READ:
 		{
-			printf("Command: Read\n");
+			printf("Command: Read (");
 
 			if (reader.cardPosition == NOT_INSERTED || reader.cardPosition == EJECTING_CARD)
 			{
-				printf("Error: Card not inserted\n");
+				printf("Error Card not inserted)\n");
 				reader.jobStatus = STATUS_WAITING_FOR_CARD;
 				break;
 			}
@@ -550,11 +750,14 @@ int main(int argc, char *argv[])
 				{
 					if (trackIndex[i] == -1)
 						continue;
+					printf("Track%d, ", i);
 					for (int j = 0; j < TRACK_SIZE; j++)
 						outputPacketData[outputPacketDataLength++] = tracks[trackIndex[i]][j];
 				}
 			}
+			printf(")\n");
 
+			reader.cardPosition = UNDER_READER;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -563,11 +766,11 @@ int main(int argc, char *argv[])
 		// Write data to the card
 		case WRITE:
 		{
-			printf("Command: Write\n");
+			printf("Command: Write (");
 
 			if (reader.cardPosition == NOT_INSERTED || reader.cardPosition == EJECTING_CARD)
 			{
-				printf("Error: Card not inserted\n");
+				printf("Error Card not inserted)\n");
 				reader.jobStatus = STATUS_WAITING_FOR_CARD;
 				break;
 			}
@@ -586,12 +789,14 @@ int main(int argc, char *argv[])
 				{
 					if (trackIndex[i] == -1)
 						continue;
-
+					printf("Track%d, ", i);
 					for (int j = 0; j < TRACK_SIZE; j++)
 						tracks[trackIndex[i]][j] = inputPacket[inputPacketPointer++];
 				}
+				printf(")\n");
 			}
 
+			reader.cardPosition = UNDER_READER;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -604,6 +809,7 @@ int main(int argc, char *argv[])
 			for (int i = 0; i < 3; i++)
 				for (int j = 0; j < TRACK_SIZE; j++)
 					tracks[i][j] = 0x00;
+			reader.cardPosition = UNDER_READER;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -613,6 +819,7 @@ int main(int argc, char *argv[])
 		case PRINT:
 		{
 			printf("Command: Print\n");
+			reader.cardPosition = UNDER_PRINT_HEAD;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -624,17 +831,50 @@ int main(int argc, char *argv[])
 			printf("Command: Get new card\n");
 			reader.cardPosition = DISPENCING_FROM_BACK;
 			reader.coverClosed = 1;
+			reader.readerStatus = STATUS_NO_ERR;
+			reader.jobStatus = STATUS_NO_JOB;
+		}
+		break;
+
+		// Cancel the last operation
+		case CANCEL:
+		{
+			printf("Command: Cancel\n");
+			//reader.cardPosition = NOT_INSERTED;
+			reader.readerStatus = STATUS_NO_ERR;
+			reader.jobStatus = STATUS_NO_JOB;
+		}
+		break;
+
+		case SET_PRINT_PARAM:
+		{
+			printf("Command: Set print param\n");
+			//reader.cardPosition = UNDER_PRINT_HEAD;
+			reader.readerStatus = STATUS_NO_ERR;
+			reader.jobStatus = STATUS_NO_JOB;
 		}
 		break;
 
 		default:
+		{
 			printf("Error: %X is an unknown command\n", inputPacket[0]);
-			return EXIT_FAILURE;
+			running = 0;
+			continue;
+		}
 		}
 
 		// Send the ack reply
 		unsigned char ack[] = {ACK};
-		writeBytes(ack, 1);
+		int n = writeBytes(ack, 1, rs422Mode);
+		/*printf("ACK %d\n", n);*/
+
+		// Seperate for debugging purposes
+		//printf("\n");
+	}
+
+	if (rs422Mode && rs422ThreadID)
+	{
+		pthread_join(rs422ThreadID, NULL);
 	}
 
 	closeDevice(serialIO);
