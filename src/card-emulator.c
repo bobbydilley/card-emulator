@@ -119,9 +119,7 @@ typedef struct
 } CircularBuffer;
 
 CircularBuffer rs422InputBuffer;
-//pthread_mutex_t rs422InputMutex;
 CircularBuffer rs422OutputBuffer;
-//pthread_mutex_t rs422OutputMutex;
 
 /**
  * Generates card status based upon card struct for both status modes
@@ -250,8 +248,6 @@ int readBytes(unsigned char *buffer, int amount, int rs422Mode)
 {
 	if (rs422Mode)
 	{
-		//pthread_mutex_lock(&rs422InputMutex);
-
 		if (rs422InputBuffer.head == rs422InputBuffer.tail)
 			return 0;
 
@@ -265,8 +261,6 @@ int readBytes(unsigned char *buffer, int amount, int rs422Mode)
 			rs422InputBuffer.tail = rs422InputBuffer.tail + size - BUFFER_SIZE;
 		else
 			rs422InputBuffer.tail += size;
-
-		//pthread_mutex_unlock(&rs422InputMutex);
 
 		return size;
 	}
@@ -314,8 +308,6 @@ int writeBytes(unsigned char *buffer, int amount, int rs422Mode)
 			memcpy(&rs422OutputBuffer.buffer[rs422OutputBuffer.head], buffer, amount);
 			rs422OutputBuffer.head += amount;
 		}
-
-		//pthread_mutex_unlock(&rs422OutputMutex);
 
 		return amount;
 	}
@@ -482,13 +474,6 @@ void *rs422Thread(void *vargp)
 	rs422InputBuffer.head = rs422OutputBuffer.head = 0;
 	rs422InputBuffer.tail = rs422OutputBuffer.tail = 0;
 
-	// Initialise the mutexs
-	/*if (pthread_mutex_init(&rs422InputMutex, NULL) != 0 || pthread_mutex_init(&rs422OutputMutex, NULL) != 0)
-	{
-		printf("Error: Mutex creation failed\n");
-		arguments->running = 0;
-	}*/
-
 	while (arguments->running)
 	{
 		unsigned char buffer[2];
@@ -511,13 +496,10 @@ void *rs422Thread(void *vargp)
 		{
 			writeBytes(buffer, 2, 0);
 
-			//pthread_mutex_lock(&rs422InputMutex);
-
 			if (rs422InputBuffer.head + 1 == rs422InputBuffer.tail)
 			{
 				printf("Error: Buffer full\n");
 				arguments->running = 0;
-				//pthread_mutex_unlock(&rs422InputMutex);
 				continue;
 			}
 
@@ -528,30 +510,22 @@ void *rs422Thread(void *vargp)
 			else
 				rs422InputBuffer.head++;
 
-			//pthread_mutex_unlock(&rs422InputMutex);
 		}
 		break;
 
 		case 0x80:
 		{
-			//pthread_mutex_lock(&rs422OutputMutex);
-
 			unsigned char outputBuffer[2] = {0x80, 0x00}; // Empty
 			if (rs422OutputBuffer.head != rs422OutputBuffer.tail)
 			{
 				outputBuffer[1] = 0x40; // Not empty
 			}
-
-			//pthread_mutex_unlock(&rs422OutputMutex);
-
 			writeBytes(outputBuffer, 2, 0);
 		}
 		break;
 
 		case 0x81:
 		{
-			//pthread_mutex_lock(&rs422OutputMutex);
-
 			unsigned char outputBuffer[2] = {0x81, 0x00}; // Empty
 			if (rs422OutputBuffer.head != rs422OutputBuffer.tail)
 			{
@@ -562,9 +536,6 @@ void *rs422Thread(void *vargp)
 				else
 					rs422OutputBuffer.tail++;
 			}
-
-			//pthread_mutex_unlock(&rs422OutputMutex);
-
 			writeBytes(outputBuffer, 2, 0);
 		}
 		break;
