@@ -22,7 +22,7 @@ This uses the standard protocol for the BR card reader, but it's encapsulated in
 - Stop Bits: 1 Bit
 - RTS/CTS: NO
 
-You can view packet captures taken from the real board [here](docs/packet-captures). 
+You can view packet captures taken from the real board [here](./packet-captures). 
 
 You will need a USB to RS422 converter that can support at least 2 million baud. I have used one with an FTDI chipset, and I would reccomend that specific chipset.
 
