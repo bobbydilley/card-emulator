@@ -1,0 +1,6 @@
+{
+    "files.associations": {
+        "in.h": "c",
+        "common.h": "c"
+    }
+}

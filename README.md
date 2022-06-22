@@ -17,7 +17,13 @@ make
 To run the program simpy call it from the command line:
 
 ```
-./build/card-emulator
+./build/cardd
+```
+
+To control the card reader, open up a new terminal and use the cardctl program:
+
+```
+./build/cardctl insert card.bin
 ```
 
 ## Issues

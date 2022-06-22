@@ -1,12 +1,14 @@
 .PHONY = default
 
 BUILD_DIR = build
-BUILD = card-emulator
+BUILD_DAEMON = cardd
+BUILD_CLIENT = cardctl
 SRC = src
 
-default: $(SRC)/card-emulator.c
+default: $(SRC)/cardd.c $(SRC)/cardctl.c $(SRC)/common.h
 	mkdir -p $(BUILD_DIR)
-	gcc $^ -o $(BUILD_DIR)/$(BUILD)
+	gcc $(SRC)/cardd.c -o $(BUILD_DIR)/$(BUILD_DAEMON)
+	gcc $(SRC)/cardctl.c -o $(BUILD_DIR)/$(BUILD_CLIENT)
 
 clean:
 	rm -r $(BUILD_DIR)

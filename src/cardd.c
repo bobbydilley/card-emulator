@@ -1,15 +1,19 @@
 #include <fcntl.h>
 #include <linux/serial.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
 
-#define TIMEOUT_SELECT 500
+#include "common.h"
+
+#define TIMEOUT_SELECT 1000
 #define BUFFER_SIZE 1024
 
 unsigned char inputBuffer[BUFFER_SIZE];
@@ -113,6 +117,11 @@ typedef struct
 
 typedef struct
 {
+	CardReader *reader;
+} ControlThreadArguments;
+
+typedef struct
+{
 	unsigned char buffer[BUFFER_SIZE];
 	int head;
 	int tail;
@@ -123,11 +132,11 @@ CircularBuffer rs422OutputBuffer;
 
 /**
  * Generates card status based upon card struct for both status modes
- * 
+ *
  * Depending on the reader, there are two forms of status bytes that might
  * be required. This function will transparently generate both of those by
  * taking physical attributes from the reader reader struct.
- * 
+ *
  * @param reader The card reader struct to take attributes from
  * @param shutterMode True if the reader contains a shutter
  * @returns The status byte
@@ -215,8 +224,8 @@ int setSerialAttributes(int fd, int myBaud, int parity, int flow)
 	}
 
 	// SET INTER BYTE TIMEOUTS TO 0
-	options.c_cc[VMIN] = 200;
-	options.c_cc[VTIME] = 200;
+	options.c_cc[VMIN] = 0;
+	options.c_cc[VTIME] = 0;
 
 	// SET OPTIONS
 	tcsetattr(fd, TCSANOW, &options);
@@ -249,7 +258,10 @@ int readBytes(unsigned char *buffer, int amount, int rs422Mode)
 	if (rs422Mode)
 	{
 		if (rs422InputBuffer.head == rs422InputBuffer.tail)
+		{
+			usleep(TIMEOUT_SELECT * 1000);
 			return 0;
+		}
 
 		int size = BUFFER_SIZE + rs422InputBuffer.head - rs422InputBuffer.tail;
 		if (rs422InputBuffer.head >= rs422InputBuffer.tail)
@@ -355,11 +367,11 @@ int writePacket(unsigned char *packet, int length, int rs422Mode)
 
 /**
  * Read in a card reader packet
- * 
+ *
  * Reads in a packet from the card reader taking into account if we're running
  * in RS422 mode and require to skip the address bytes that we get before each
  * data byte.
- * 
+ *
  * @param packet The address of the packet buffer to fill with the read packet
  * @param rs422Mode Set if reader is connected directly to the Naomi RS422 pins
  * @returns The length of the packet read
@@ -461,8 +473,116 @@ void getTrackIndex(unsigned char track, int *trackIndex)
 }
 
 /**
+ * Listens for control commands from cardctl
+ *
+ * This is a TCP control thread that listens for commands
+ * from cardctl. When a command is received, it is parsed
+ * and the appropriate action is taken such as insert/eject.
+ */
+void *controlThread(void *vargp)
+{
+	ControlThreadArguments *arguments = (ControlThreadArguments *)vargp;
+
+	int new_socket, opt = 1;
+	struct sockaddr_in address;
+	int addrlen = sizeof(address);
+
+	int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+	if (server_fd == 0)
+	{
+		printf("Error: Failed to create socket\n");
+		return 0;
+	}
+
+	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)))
+	{
+		printf("Error: Failed to set socket options\n");
+		return 0;
+	}
+
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = INADDR_ANY;
+	address.sin_port = htons(PORT);
+
+	if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
+	{
+		printf("Error: Failed to bind socket\n");
+		return 0;
+	}
+
+	if (listen(server_fd, 3) < 0)
+	{
+		printf("Error: Listen failed");
+		return 0;
+	}
+
+	while (1)
+	{
+		if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0)
+		{
+			printf("Error: Failed to accept\n");
+			return 0;
+		}
+
+		unsigned char control = 0;
+		int bytesRead = read(new_socket, &control, 1);
+
+		if (bytesRead < 1)
+		{
+			close(new_socket);
+			continue;
+		}
+
+		unsigned char response = COMMAND_SUCCESS;
+
+		unsigned char responseBuffer[BUFFER_SIZE];
+		unsigned char responseLength = 0;
+
+		switch (control)
+		{
+		case COMMAND_GET_STATUS:
+		{
+			printf("COMMAND GET STATUS %d\n", arguments->reader->cardPosition);
+			if (arguments->reader->cardPosition != NOT_INSERTED)
+			{
+				responseBuffer[responseLength++] = COMMAND_STATUS_CARD_INSERTED;
+			} else {
+				responseBuffer[responseLength++] = COMMAND_STATUS_CARD_EJECTED;
+			}
+		}
+
+		break;
+
+		case COMMAND_INSERT_CARD:
+			printf("COMMAND INSERT CARD\n");
+			arguments->reader->cardPosition = INSERTED_IN_FRONT;
+			break;
+
+		case COMMAND_EJECT_CARD:
+			printf("COMMAND EJECT CARD\n");
+			arguments->reader->cardPosition = NOT_INSERTED;
+			break;
+
+		default:
+			printf("UNKNOWN CONTROL COMMAND\n");
+			response = COMMAND_FAILURE;
+			break;
+		}
+
+		write(new_socket, &response, 1);
+
+		if(responseLength != 0) {
+			write(new_socket, &responseBuffer, responseLength);
+		}
+	}
+
+	return 0;
+}
+
+/**
  * This thread deals with the RS422 ring network communication
- * 
+ *
  * Derby Owners Club uses a conversion board that speaks RS422 and
  * converts to RS232. This thread will act as that conversion board
  * and fill the input/output buffer with correct packets.
@@ -594,6 +714,11 @@ int main(int argc, char *argv[])
 	reader.cardPosition = NOT_INSERTED;
 	reader.readerStatus = STATUS_NO_ERR;
 	reader.jobStatus = STATUS_NO_JOB;
+
+	pthread_t controlThreadID;
+	ControlThreadArguments arguments = {0};
+	arguments.reader = &reader;
+	pthread_create(&controlThreadID, NULL, controlThread, &arguments);
 
 	unsigned char lastCommand = 0x00;
 
@@ -840,7 +965,7 @@ int main(int argc, char *argv[])
 		case CANCEL:
 		{
 			printf("Command: Cancel\n");
-			//reader.cardPosition = NOT_INSERTED;
+			// reader.cardPosition = NOT_INSERTED;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -849,7 +974,7 @@ int main(int argc, char *argv[])
 		case SET_PRINT_PARAM:
 		{
 			printf("Command: Set print param\n");
-			//reader.cardPosition = UNDER_PRINT_HEAD;
+			// reader.cardPosition = UNDER_PRINT_HEAD;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
 		}
@@ -869,13 +994,15 @@ int main(int argc, char *argv[])
 		/*printf("ACK %d\n", n);*/
 
 		// Seperate for debugging purposes
-		//printf("\n");
+		// printf("\n");
 	}
 
 	if (rs422Mode && rs422ThreadID)
 	{
 		pthread_join(rs422ThreadID, NULL);
 	}
+
+	pthread_join(controlThreadID, NULL);
 
 	closeDevice(serialIO);
 
