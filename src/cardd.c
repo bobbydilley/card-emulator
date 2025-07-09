@@ -130,6 +130,47 @@ typedef struct
 CircularBuffer rs422InputBuffer;
 CircularBuffer rs422OutputBuffer;
 
+char *serialPath = "/dev/ttyS0";
+char cardPath[256];
+
+unsigned char tracks[3][TRACK_SIZE];
+
+void saveCardToFile() {
+    FILE *file = fopen(cardPath, "wb");
+
+    if (file == NULL) {
+        perror("Error: Couldn't open file for writing");
+        return;
+    }
+
+    size_t written = fwrite(tracks, sizeof(unsigned char), 3 * TRACK_SIZE, file);
+    if (written != 3 * TRACK_SIZE) {
+        printf("Error : Couldn't write tracks to file");
+    }
+
+    fclose(file);
+}
+
+void loadCardFromFile() {
+    FILE *file = fopen(cardPath, "rb");
+    if (!file) {
+        printf("Error: Failed to open file for reading, creating a new card.\n");
+
+		for (int i = 0; i < 3; i++)
+				for (int j = 0; j < TRACK_SIZE; j++)
+					tracks[i][j] = 0x00;
+
+        return saveCardToFile();
+    }
+
+    size_t read = fread(tracks, sizeof(unsigned char), 3 * TRACK_SIZE, file);
+    if (read != 3 * TRACK_SIZE) {
+        printf("Error: Failed to read complete data from file");
+    }
+
+    fclose(file);
+}
+
 /**
  * Generates card status based upon card struct for both status modes
  *
@@ -555,10 +596,30 @@ void *controlThread(void *vargp)
 		break;
 
 		case COMMAND_INSERT_CARD:
+		{
 			printf("COMMAND INSERT CARD\n");
-			arguments->reader->cardPosition = INSERTED_IN_FRONT;
-			break;
+			unsigned char length = 0;
+			bytesRead = read(new_socket, &length, 1);
 
+			if(bytesRead != 1) {
+				printf("NO PATH ERROR\n");
+				response = COMMAND_FAILURE;
+				break;
+			}
+
+			unsigned char filePath[256] = {0};
+			read(new_socket, &filePath, length);
+			
+
+			strcpy(cardPath, filePath);
+			printf("File path updated %s\n", cardPath);
+
+			loadCardFromFile();
+
+			arguments->reader->cardPosition = INSERTED_IN_FRONT;
+		}
+		break;
+			
 		case COMMAND_EJECT_CARD:
 			printf("COMMAND EJECT CARD\n");
 			arguments->reader->cardPosition = NOT_INSERTED;
@@ -675,9 +736,6 @@ int main(int argc, char *argv[])
 
 	Game game = DERBY_OWNERS_CLUB;
 
-	char *serialPath = "/dev/ttyUSB0";
-	char *cardPath = "card.bin";
-
 	int rs422Mode = 1;
 	int shutterMode = 1;
 	int evenParity = 0;
@@ -731,7 +789,6 @@ int main(int argc, char *argv[])
 	int outputPacketDataLength = 0;
 	unsigned char outputPacketData[BUFFER_SIZE];
 
-	unsigned char tracks[3][TRACK_SIZE];
 	memset(&tracks, 0x00, 3 * TRACK_SIZE);
 
 	while (running)
@@ -862,6 +919,8 @@ int main(int argc, char *argv[])
 				break;
 			}
 
+			loadCardFromFile();
+
 			char readParam1 = inputPacket[4];
 			char readParam2 = inputPacket[5];
 			char readParam3 = inputPacket[6];
@@ -924,6 +983,8 @@ int main(int argc, char *argv[])
 			reader.cardPosition = UNDER_READER;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
+
+			saveCardToFile();
 		}
 		break;
 
@@ -937,6 +998,8 @@ int main(int argc, char *argv[])
 			reader.cardPosition = UNDER_READER;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
+
+			saveCardToFile();
 		}
 		break;
 
@@ -954,10 +1017,16 @@ int main(int argc, char *argv[])
 		case NEW_CARD:
 		{
 			printf("Command: Get new card\n");
+			for (int i = 0; i < 3; i++)
+				for (int j = 0; j < TRACK_SIZE; j++)
+					tracks[i][j] = 0x00;
+
 			reader.cardPosition = DISPENCING_FROM_BACK;
 			reader.coverClosed = 1;
 			reader.readerStatus = STATUS_NO_ERR;
 			reader.jobStatus = STATUS_NO_JOB;
+
+			saveCardToFile();
 		}
 		break;
 

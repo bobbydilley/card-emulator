@@ -77,6 +77,12 @@ int main(int argc, char *argv[])
         }
         unsigned char byte = COMMAND_INSERT_CARD;
         write(sockfd, &byte, 1);
+        
+        unsigned char length = strlen(argv[2]);
+        write(sockfd, &length, 1);
+
+        write(sockfd, argv[2], length);
+        
         read(sockfd, &byte, 1);
         if (byte != COMMAND_SUCCESS)
         {
