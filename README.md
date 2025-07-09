@@ -14,18 +14,21 @@ sudo apt install -y build-essential
 make
 ```
 
-To run the program simpy call it from the command line:
+To run the program simpy call it from the command line and specify your serial path if it isn't `/dev/ttyUSB0`.
 
 ```
-./build/cardd
+CARD_SERIAL_PATH=/dev/ttyS0 ./build/cardd
 ```
 
 To control the card reader, open up a new terminal and use the cardctl program:
 
 ```
-./build/cardctl insert card.bin
+./build/cardctl
 ```
+
+it will then explain the usage.
 
 ## Issues
 
-- You must change the settings via code
+- Not fully tested on Derby Owners Club.
+- Some of the settings can only be changed in the code.

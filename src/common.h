@@ -13,3 +13,7 @@
 
 /* The port to control the emulator */
 #define PORT 2000
+
+/* Version number */
+#define MAJOR_VERSION 0
+#define MINOR_VERSION 3

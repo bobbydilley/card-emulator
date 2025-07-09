@@ -78,6 +78,9 @@ int serialIO = -1;
 /* Data sizes */
 #define TRACK_SIZE 69
 
+/* Default Paths */
+#define DEFAULT_SERIAL_PATH "/dev/ttyUSB0"
+
 typedef enum
 {
 	DERBY_OWNERS_CLUB,
@@ -130,7 +133,6 @@ typedef struct
 CircularBuffer rs422InputBuffer;
 CircularBuffer rs422OutputBuffer;
 
-char *serialPath = "/dev/ttyS0";
 char cardPath[256];
 
 unsigned char tracks[3][TRACK_SIZE];
@@ -732,9 +734,12 @@ void *rs422Thread(void *vargp)
 
 int main(int argc, char *argv[])
 {
-	printf("Card Emulator Version 0.2\n\n");
+	printf("Card Emulator Version %d.%d\n\n", MAJOR_VERSION, MINOR_VERSION);
 
 	Game game = DERBY_OWNERS_CLUB;
+
+    char *customSerialPath = getenv("CARD_SERIAL_PATH");
+    char *serialPath = customSerialPath ? customSerialPath : DEFAULT_SERIAL_PATH;
 
 	int rs422Mode = 1;
 	int shutterMode = 1;
@@ -742,6 +747,7 @@ int main(int argc, char *argv[])
 	int flowControl = 0;
 	int baudRate = B2000000;
 
+	printf("      Serial Path: %s\n", serialPath);
 	printf("  Connection Mode: %s\n", rs422Mode ? "RS422 Mode" : "RS232 Mode");
 	printf("   Emulation Mode: %s\n", shutterMode ? "Shutter" : "No Shutter");
 	printf("           Parity: %s\n", evenParity ? "Even" : "None");

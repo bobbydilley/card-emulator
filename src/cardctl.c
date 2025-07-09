@@ -19,6 +19,12 @@ int main(int argc, char *argv[])
         printf("  status         | Gets the card reader status\n");
         printf("  insert [path]  | Inserts a new card at path\n");
         printf("  eject          | Ejects the card\n");
+        printf("  version        | Gets the version number of the cardctl program\n");
+        return EXIT_SUCCESS;
+    }
+
+    if(strcmp(argv[1], "version") == 0) {
+        printf("cardctl version %d.%d by Bobby Dilley\n", MAJOR_VERSION, MINOR_VERSION);
         return EXIT_SUCCESS;
     }
 
@@ -82,7 +88,7 @@ int main(int argc, char *argv[])
         write(sockfd, &length, 1);
 
         write(sockfd, argv[2], length);
-        
+
         read(sockfd, &byte, 1);
         if (byte != COMMAND_SUCCESS)
         {
