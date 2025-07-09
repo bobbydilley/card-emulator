@@ -28,6 +28,4 @@ To control the card reader, open up a new terminal and use the cardctl program:
 
 ## Issues
 
-- Currently there is no control over inserting a new card
-- Cards are only saved to ram and are deleted once the program is stopped
 - You must change the settings via code
